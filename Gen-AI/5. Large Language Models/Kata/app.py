@@ -4,7 +4,9 @@ import os
 from datetime import datetime
 from newspaper import Article
 from dotenv import load_dotenv
-from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
 
 # Load environment variables
 load_dotenv()
@@ -15,11 +17,15 @@ SUMMARIES_FILE = "news_summaries.json"
 # Model configuration
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 
-# Initialize OpenAI client
+# Initialize OpenAI LLM via LangChain
 @st.cache_resource
 def get_llm():
-    """Initialize and cache the OpenAI client"""
-    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    """Initialize and cache the LangChain ChatOpenAI instance"""
+    return ChatOpenAI(
+        model=MODEL_NAME,
+        temperature=0.3,
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
 
 def extract_article_content(url):
     """Extract article content using Newspaper3k"""
@@ -39,61 +45,53 @@ def extract_article_content(url):
         st.error(f"Error extracting article: {str(e)}")
         return None
 
-def summarize_article(article_data, client):
-    """Summarize article and classify type using OpenAI Chat Completions"""
+def summarize_article(article_data, llm):
+    """Summarize article and classify type using LangChain LLMChain"""
+    # Prompt for summarization
+    summary_prompt = PromptTemplate(
+        input_variables=["title", "text"],
+        template="""
+        You are a professional news summarizer. Summarize the following news article in 3-4 concise sentences.
+        Focus on the key points, main events, and important details.
+        
+        Title: {title}
+        
+        Article Text:
+        {text}
+        
+        Summary:
+        """
+    )
+
+    # Prompt for article type classification
+    classification_prompt = PromptTemplate(
+        input_variables=["title", "summary"],
+        template="""
+        Based on the following news article title and summary, classify the article type.
+        Choose ONE from these categories: financial, technology, sports, politics, health, entertainment, science, business, world, other
+        
+        Title: {title}
+        Summary: {summary}
+        
+        Return ONLY the category name in lowercase, nothing else.
+        Article Type:
+        """
+    )
+
     try:
-        # Generate summary
-        summary_resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            temperature=0.3,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a professional news summarizer. Summarize the article in 3-4 concise sentences, "
-                        "focusing on key points, main events, and important details."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Title: {article_data['title']}\n\n"
-                        f"Article Text:\n{article_data['text'][:4000]}\n\n"
-                        "Provide only the summary."
-                    ),
-                },
-            ],
-        )
-        summary = (summary_resp.choices[0].message.content or "").strip()
+        # Create chains
+        summary_chain = LLMChain(llm=llm, prompt=summary_prompt)
+        classification_chain = LLMChain(llm=llm, prompt=classification_prompt)
+
+        # Generate summary (can truncate text for token limits)
+        summary = summary_chain.run(title=article_data["title"], text=article_data["text"])
 
         # Classify article type
-        classify_resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            temperature=0,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify the article type based on the title and summary. "
-                        "Choose ONE from: financial, technology, sports, politics, health, entertainment, "
-                        "science, business, world, other. Return ONLY the category in lowercase."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Title: {article_data['title']}\n\n"
-                        f"Summary: {summary}\n\n"
-                        "Category:"
-                    ),
-                },
-            ],
-        )
-        article_type = (classify_resp.choices[0].message.content or "other").strip().lower()
+        article_type = classification_chain.run(title=article_data["title"], summary=summary).strip().lower()
 
         return {
             "date": article_data["publish_date"],
-            "summary": summary,
+            "summary": summary.strip(),
             "articleType": article_type,
             "title": article_data["title"],
             "url": article_data["url"],
@@ -117,35 +115,34 @@ def save_summaries(summaries):
     with open(SUMMARIES_FILE, 'w') as f:
         json.dump(summaries, f, indent=2)
 
-def answer_question(question, summaries, client):
-    """Answer questions based on stored summaries using OpenAI Chat Completions"""
+def answer_question(question, summaries, llm):
+    """Answer questions based on stored summaries using LangChain LLMChain"""
     # Prepare context from summaries
     context = "\n\n".join([
         f"Date: {s['date']}\nType: {s['articleType']}\nTitle: {s.get('title', 'N/A')}\nSummary: {s['summary']}"
         for s in summaries
     ])
+
+    qa_prompt = PromptTemplate(
+        input_variables=["context", "question"],
+        template="""
+        You are a helpful assistant that answers questions based on news article summaries.
+        
+        Here are the news summaries you have access to:
+        {context}
+        
+        Question: {question}
+        
+        Answer the question based on the summaries above. If the information is not available in the summaries, say so.
+        
+        Answer:
+        """
+    )
+
     try:
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            temperature=0.2,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You answer questions strictly based on the provided news summaries. "
-                        "If the information is not present, respond with that fact."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Here are the news summaries you have access to:\n" + context +
-                        f"\n\nQuestion: {question}\n\nProvide a concise answer."
-                    ),
-                },
-            ],
-        )
-        return (resp.choices[0].message.content or "").strip()
+        qa_chain = LLMChain(llm=llm, prompt=qa_prompt)
+        answer = qa_chain.run(context=context, question=question)
+        return answer.strip()
     except Exception as e:
         return f"Error answering question: {str(e)}"
 
@@ -154,7 +151,6 @@ def main():
     st.set_page_config(page_title="News Summarization Tool", page_icon="📰", layout="wide")
     
     st.title("📰 News Summarization Tool")
-    st.markdown("---")
     
     # Initialize session flags
     if "do_summarize" not in st.session_state:
@@ -162,13 +158,7 @@ def main():
     
     # Sidebar for configuration
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
-        if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
-        
-        st.markdown("---")
-        st.markdown("### 📊 Statistics")
+        st.header("📊 Statistics")
         summaries = load_summaries()
         st.metric("Total Summaries", len(summaries))
         
@@ -194,7 +184,7 @@ def main():
     
     if st.session_state.get("do_summarize") and url:
         if not os.getenv("OPENAI_API_KEY"):
-            st.error("⚠️ Please provide an OpenAI API key in the sidebar!")
+            st.error("⚠️ Please provide an OpenAI API key")
         else:
             with st.spinner("🔍 Extracting article content..."):
                 article_data = extract_article_content(url)
@@ -209,8 +199,8 @@ def main():
                     st.write(f"**Text Preview:** {article_data['text'][:500]}...")
                 
                 with st.spinner("🤖 Generating summary with AI..."):
-                    client = get_llm()
-                    summary_data = summarize_article(article_data, client)
+                    llm = get_llm()
+                    summary_data = summarize_article(article_data, llm)
                 
                 if summary_data:
                     st.success("✅ Summary generated successfully!")
@@ -260,9 +250,9 @@ def main():
         elif not question.strip():
             st.warning("Please enter a valid question.")
         else:
-            client = get_llm()
+            llm = get_llm()
             with st.spinner("🤔 Thinking..."):
-                response = answer_question(question.strip(), summaries_for_qa, client)
+                response = answer_question(question.strip(), summaries_for_qa, llm)
             st.markdown("**Answer:**")
             st.write(response)
 
