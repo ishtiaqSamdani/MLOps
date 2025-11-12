@@ -161,4 +161,10 @@ rm -rf milvus-volumes
 - Web scraping honors a configurable `USER_AGENT`.
 - This kata demonstrates idempotent indexing and modern LangChain Runnable pipelines.
 
+#### Screenshots
+
+<img width="1900" height="1859" alt="image" src="https://github.com/user-attachments/assets/38e9cffb-5650-40fa-bb32-957c715b209a" />
+<img width="1860" height="635" alt="image" src="https://github.com/user-attachments/assets/868760a7-1945-4725-b0ba-ae0540c5335b" />
+
+
 
