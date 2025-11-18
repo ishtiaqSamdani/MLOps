@@ -1,0 +1,16 @@
+pymilvus
+sentence-transformers
+openai
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-milvus
+requests
+python-dotenv
+tiktoken
+langchain-text-splitters
+PyPDF2
+torch
+langchain-huggingface
+einops
